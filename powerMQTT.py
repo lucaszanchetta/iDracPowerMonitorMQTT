@@ -426,10 +426,16 @@ def collect_ipmi_metrics(server: dict) -> dict:
             keepalive=False,
         )
         ipmi.init_sdr()
-        # NOTE: _sdr is a pyghmi private API. No public alternative exists for
-        # iterating sensors. If this breaks on a pyghmi update, check for a new
-        # public SDR accessor in the pyghmi docs.
-        for sensor_key in ipmi._sdr.get_sensor_numbers():
+        try:
+            sensor_numbers = ipmi._sdr.get_sensor_numbers()
+        except (AttributeError, TypeError) as exc:
+            raise RuntimeError(
+                "pyghmi private API '_sdr' is unavailable. "
+                "The installed pyghmi version may be incompatible. "
+                "Ensure pyghmi>=1.0,<2.0 is installed. "
+                f"Details: {exc}"
+            ) from exc
+        for sensor_key in sensor_numbers:
             sensor = ipmi._sdr.sensors[sensor_key]
             try:
                 response = ipmi.raw_command(
