@@ -856,6 +856,7 @@ def publish_host_error(messages: list[dict], host: str, error_message: str) -> N
                 "status": "error",
                 "error": error_message,
                 "collected_at": datetime.now(timezone.utc).isoformat(),
+                "expire_after_seconds": DISCOVERY_EXPIRE_AFTER_SECONDS,
             },
             separators=(",", ":"),
         ),
