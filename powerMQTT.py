@@ -9,10 +9,18 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 __version__ = "1.1.0"
+
+_shutdown_event = threading.Event()
+
+
+def _handle_shutdown_signal(signum, frame):
+    """Set the shutdown event on SIGTERM/SIGINT to begin graceful shutdown."""
+    _shutdown_event.set()
 
 
 def _env_int(name: str, default: str) -> int:
@@ -915,14 +923,18 @@ def collect_all(verbose: bool, config_path: str | None = None, servers: list[dic
 
     Returns (ordered_results, failures) where results preserve the config order.
     Failed hosts are captured in failures rather than raising.
+    Checks _shutdown_event between submissions to support graceful shutdown.
     """
     results_by_host = {}
     failures = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(servers)) as executor:
-        future_map = {
-            executor.submit(collect_host, server["name"], config_path, servers_by_name): server["name"]
-            for server in servers
-        }
+        future_map = {}
+        for server in servers:
+            if _shutdown_event.is_set():
+                break
+            future = executor.submit(collect_host, server["name"], config_path, servers_by_name)
+            future_map[future] = server["name"]
+
         for future in concurrent.futures.as_completed(future_map):
             host = future_map[future]
             try:
@@ -968,6 +980,9 @@ def print_single_host(snapshot: dict, metric: str | None, plain: bool) -> int:
 def main() -> int:
     """Entry point. Returns 0 on success, 1 on any host failure or error."""
     args = parse_args()
+
+    signal.signal(signal.SIGTERM, _handle_shutdown_signal)
+    signal.signal(signal.SIGINT, _handle_shutdown_signal)
 
     if not args.internal_publish_messages:
         servers = load_servers(args.config)
