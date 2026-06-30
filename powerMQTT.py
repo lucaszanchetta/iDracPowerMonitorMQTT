@@ -12,8 +12,20 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+__version__ = "1.1.0"
+
+
+def _env_int(name: str, default: str) -> int:
+    """Read an environment variable as an int, raising SystemExit on bad input."""
+    raw = os.environ.get(name, default)
+    try:
+        return int(raw)
+    except ValueError:
+        raise SystemExit(f"Environment variable {name} must be an integer, got: {raw!r}")
+
+
 MQTT_HOST = os.environ.get("IDRAC_MQTT_HOST", "127.0.0.1")
-MQTT_PORT = int(os.environ.get("IDRAC_MQTT_PORT", "1883"))
+MQTT_PORT = _env_int("IDRAC_MQTT_PORT", "1883")
 TOPIC_PREFIX = os.environ.get("IDRAC_MQTT_TOPIC_PREFIX", "homelab/idrac")
 HOME_ASSISTANT_DISCOVERY_PREFIX = os.environ.get(
     "HOME_ASSISTANT_DISCOVERY_PREFIX", "homeassistant"
@@ -21,30 +33,28 @@ HOME_ASSISTANT_DISCOVERY_PREFIX = os.environ.get(
 PUBLISH_HOME_ASSISTANT_DISCOVERY = (
     os.environ.get("IDRAC_PUBLISH_HOME_ASSISTANT_DISCOVERY", "1") != "0"
 )
-DIRECT_SSH_TIMEOUT_SECONDS = int(os.environ.get("IDRAC_DIRECT_SSH_TIMEOUT_SECONDS", "10"))
-INTERACTIVE_SSH_TIMEOUT_SECONDS = int(
-    os.environ.get("IDRAC_INTERACTIVE_SSH_TIMEOUT_SECONDS", "30")
-)
-IPMI_COLLECTION_TIMEOUT_SECONDS = int(
-    os.environ.get("IDRAC_IPMI_COLLECTION_TIMEOUT_SECONDS", "15")
-)
-MQTT_PUBLISH_TIMEOUT_SECONDS = int(
-    os.environ.get("IDRAC_MQTT_PUBLISH_TIMEOUT_SECONDS", "10")
-)
+DIRECT_SSH_TIMEOUT_SECONDS = _env_int("IDRAC_DIRECT_SSH_TIMEOUT_SECONDS", "10")
+INTERACTIVE_SSH_TIMEOUT_SECONDS = _env_int("IDRAC_INTERACTIVE_SSH_TIMEOUT_SECONDS", "30")
+IPMI_COLLECTION_TIMEOUT_SECONDS = _env_int("IDRAC_IPMI_COLLECTION_TIMEOUT_SECONDS", "15")
+MQTT_PUBLISH_TIMEOUT_SECONDS = _env_int("IDRAC_MQTT_PUBLISH_TIMEOUT_SECONDS", "10")
 IDRAC_PROMPT = r"/admin1->\s*"
 IPMI_USER = os.environ.get("IDRAC_IPMI_USER", "root")
 IPMI_PASSWORD = os.environ.get("IDRAC_IPMI_PASSWORD", "calvin")
 AMBIENT_TEMPERATURE_SENSOR = os.environ.get(
     "IDRAC_AMBIENT_TEMPERATURE_SENSOR", "Ambient Temp"
 )
-DISCOVERY_EXPIRE_AFTER_SECONDS = int(
-    os.environ.get("IDRAC_DISCOVERY_EXPIRE_AFTER_SECONDS", "180")
-)
+DISCOVERY_EXPIRE_AFTER_SECONDS = _env_int("IDRAC_DISCOVERY_EXPIRE_AFTER_SECONDS", "180")
+SSH_CONNECT_TIMEOUT_SECONDS = _env_int("IDRAC_SSH_CONNECT_TIMEOUT_SECONDS", "5")
+DEVICE_MODEL = os.environ.get("IDRAC_DEVICE_MODEL", "iDRAC")
 
 SERVERS: list[dict] = []
 
 
 def load_servers(config_path: str) -> list[dict]:
+    """Load and validate server definitions from a JSON config file.
+
+    Raises SystemExit on missing file, invalid JSON, duplicate names, or bad modes.
+    """
     path = Path(config_path)
     if not path.exists():
         example = path.with_name("servers.example.json")
@@ -59,11 +69,22 @@ def load_servers(config_path: str) -> list[dict]:
         raise SystemExit(f"Invalid JSON in {path}: {exc}") from exc
     if not isinstance(servers, list) or not servers:
         raise SystemExit(f"Config must be a non-empty JSON array: {path}")
+    valid_modes = {"direct", "interactive"}
+    seen_names: set[str] = set()
     for entry in servers:
         if not isinstance(entry, dict) or "name" not in entry:
             raise SystemExit(f"Each server entry must be an object with 'name': {entry}")
+        name = entry["name"]
+        if name in seen_names:
+            raise SystemExit(f"Duplicate server name in {path}: {name!r}")
+        seen_names.add(name)
         entry.setdefault("mode", "direct")
-        entry.setdefault("ipmi_host", entry["name"])
+        if entry["mode"] not in valid_modes:
+            raise SystemExit(
+                f"Invalid mode {entry['mode']!r} for server {name!r}, "
+                f"must be one of: {', '.join(sorted(valid_modes))}"
+            )
+        entry.setdefault("ipmi_host", name)
     return servers
 
 NUMERIC_KEYS = {
@@ -102,8 +123,14 @@ class QueryError(RuntimeError):
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
         description="Collect iDRAC power, temperature, and PSU electrical metrics and publish them to MQTT."
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     parser.add_argument(
         "--config",
@@ -133,6 +160,11 @@ def parse_args() -> argparse.Namespace:
         "--verbose",
         action="store_true",
         help="Print per-host collection details.",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress JSON summary output (only print errors).",
     )
     parser.add_argument(
         "--internal-query-ipmi",
@@ -236,8 +268,9 @@ def run_direct_racadm(host: str) -> str:
     """
     command = [
         "ssh",
-        "-o",
-        "BatchMode=yes",
+        "-o", "BatchMode=yes",
+        "-o", f"ConnectTimeout={SSH_CONNECT_TIMEOUT_SECONDS}",
+        "-o", "StrictHostKeyChecking=accept-new",
         host,
         "racadm getconfig -g cfgServerPower",
     ]
@@ -276,7 +309,13 @@ def run_interactive_racadm(host: str) -> str:
 
     child = pexpect.spawn(
         "ssh",
-        ["-tt", "-o", "BatchMode=yes", host],
+        [
+            "-tt",
+            "-o", "BatchMode=yes",
+            "-o", f"ConnectTimeout={SSH_CONNECT_TIMEOUT_SECONDS}",
+            "-o", "StrictHostKeyChecking=accept-new",
+            host,
+        ],
         encoding="utf-8",
         timeout=INTERACTIVE_SSH_TIMEOUT_SECONDS,
     )
@@ -356,7 +395,7 @@ def parse_cfg_output(host: str, query_mode: str, output: str) -> dict:
         elif key in RAW_KEYS:
             payload[RAW_KEYS[key]] = raw_value
 
-    if "actual_watts" not in payload:
+    if "actual_watts" not in payload or payload["actual_watts"] is None:
         raise QueryError(f"unable to parse actual_watts for {host}")
     return payload
 
@@ -387,6 +426,9 @@ def collect_ipmi_metrics(server: dict) -> dict:
             keepalive=False,
         )
         ipmi.init_sdr()
+        # NOTE: _sdr is a pyghmi private API. No public alternative exists for
+        # iterating sensors. If this breaks on a pyghmi update, check for a new
+        # public SDR accessor in the pyghmi docs.
         for sensor_key in ipmi._sdr.get_sensor_numbers():
             sensor = ipmi._sdr.sensors[sensor_key]
             try:
@@ -564,20 +606,22 @@ def availability_payload(base_topic: str) -> list[dict]:
 
 
 def host_device(host: str) -> dict:
+    """Build HA device registry entry for a single iDRAC host."""
     return {
-        "identifiers": [f"dell-idrac6-{host}"],
+        "identifiers": [f"dell-{DEVICE_MODEL.lower()}-{host}"],
         "manufacturer": "Dell",
-        "model": "iDRAC6",
-        "name": f"{host} iDRAC",
+        "model": DEVICE_MODEL,
+        "name": f"{host} {DEVICE_MODEL}",
     }
 
 
 def fleet_device() -> dict:
+    """Build HA device registry entry for the fleet aggregate."""
     return {
-        "identifiers": ["dell-idrac6-fleet"],
+        "identifiers": [f"dell-{DEVICE_MODEL.lower()}-fleet"],
         "manufacturer": "Dell",
-        "model": "iDRAC6",
-        "name": "iDRAC Fleet",
+        "model": DEVICE_MODEL,
+        "name": f"{DEVICE_MODEL} Fleet",
     }
 
 
@@ -678,33 +722,41 @@ def publish_home_assistant_discovery(messages: list[dict]) -> None:
             queue_topic(messages, topic, json.dumps(payload, separators=(",", ":")))
 
     fleet = fleet_device()
+    fleet_base = f"{TOPIC_PREFIX}/fleet"
+    fleet_availability = [
+        {
+            "topic": f"{fleet_base}/status",
+            "payload_available": "online",
+            "payload_not_available": "error",
+        }
+    ]
     fleet_configs = {
         f"{HOME_ASSISTANT_DISCOVERY_PREFIX}/sensor/idrac_total_actual_watts/config": ha_sensor_config(
-            name="iDRAC Total Actual Power",
+            name=f"{DEVICE_MODEL} Total Actual Power",
             unique_id="idrac_total_actual_watts",
             state_topic=f"{TOPIC_PREFIX}/total/actual_watts",
             unit="W",
             device_class="power",
             device=fleet,
-            availability=None,
+            availability=fleet_availability,
         ),
         f"{HOME_ASSISTANT_DISCOVERY_PREFIX}/sensor/idrac_fleet_average_ambient_temp_c/config": ha_sensor_config(
-            name="iDRAC Fleet Average Ambient Temperature",
+            name=f"{DEVICE_MODEL} Fleet Average Ambient Temperature",
             unique_id="idrac_fleet_average_ambient_temp_c",
             state_topic=f"{TOPIC_PREFIX}/fleet/average_ambient_temp_c",
             unit="°C",
             device_class="temperature",
             device=fleet,
-            availability=None,
+            availability=fleet_availability,
         ),
         f"{HOME_ASSISTANT_DISCOVERY_PREFIX}/sensor/idrac_fleet_average_input_voltage_v/config": ha_sensor_config(
-            name="iDRAC Fleet Average Input Voltage",
+            name=f"{DEVICE_MODEL} Fleet Average Input Voltage",
             unique_id="idrac_fleet_average_input_voltage_v",
             state_topic=f"{TOPIC_PREFIX}/fleet/average_input_voltage_v",
             unit="V",
             device_class="voltage",
             device=fleet,
-            availability=None,
+            availability=fleet_availability,
         ),
     }
     for topic, payload in fleet_configs.items():
@@ -834,6 +886,10 @@ def summarize(results: list[dict], failures: list[dict]) -> dict:
 
 
 def publish_summary(messages: list[dict], summary: dict) -> None:
+    """Publish fleet summary and fleet availability status."""
+    fleet_base = f"{TOPIC_PREFIX}/fleet"
+    has_hosts = bool(summary.get("hosts_ok"))
+    queue_topic(messages, f"{fleet_base}/status", "online" if has_hosts else "error")
     queue_topic(messages, f"{TOPIC_PREFIX}/summary", json.dumps(summary, separators=(",", ":")))
     queue_topic(messages, f"{TOPIC_PREFIX}/total/actual_watts", str(summary["actual_watts"]))
     queue_topic(messages, f"{TOPIC_PREFIX}/total/last_min_avg_watts", str(summary["last_min_avg_watts"]))
@@ -877,7 +933,8 @@ def collect_all(verbose: bool, config_path: str | None = None) -> tuple[list[dic
                         f"actual={snapshot['actual_watts']} temp={temp} avg_v={avg_v}"
                     )
             except Exception as exc:  # noqa: BLE001
-                failures.append({"host": host, "error": str(exc)})
+                error_msg = str(exc)[:200]
+                failures.append({"host": host, "error": error_msg})
                 if verbose:
                     print(f"{host}: error {exc}", file=sys.stderr)
 
@@ -917,6 +974,9 @@ def main() -> int:
                 f"unknown host '{args.host}', available: {', '.join(s['name'] for s in SERVERS)}",
                 file=sys.stderr,
             )
+            return 1
+        if args.metric and not args.host:
+            print("--metric requires --host", file=sys.stderr)
             return 1
 
     if args.internal_publish_messages:
@@ -968,16 +1028,17 @@ def main() -> int:
     publish_summary(mqtt_messages, summary)
     publish_messages(mqtt_messages, config_path=args.config)
 
-    print(
-        json.dumps(
-            {
-                "published_hosts": [item["host"] for item in results],
-                "failed_hosts": failures,
-                "summary": summary,
-            },
-            sort_keys=True,
+    if not args.quiet:
+        print(
+            json.dumps(
+                {
+                    "published_hosts": [item["host"] for item in results],
+                    "failed_hosts": failures,
+                    "summary": summary,
+                },
+                sort_keys=True,
+            )
         )
-    )
     return 1 if failures else 0
 
 

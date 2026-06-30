@@ -88,6 +88,8 @@ Host idrac1
 | `IDRAC_PUBLISH_HOME_ASSISTANT_DISCOVERY` | `1` | Set to `0` to disable HA discovery |
 | `HOME_ASSISTANT_DISCOVERY_PREFIX` | `homeassistant` | HA discovery MQTT prefix |
 | `IDRAC_DISCOVERY_EXPIRE_AFTER_SECONDS` | `180` | HA sensor expiry time |
+| `IDRAC_SSH_CONNECT_TIMEOUT_SECONDS` | `5` | SSH connection timeout (fail fast on unreachable hosts) |
+| `IDRAC_DEVICE_MODEL` | `iDRAC` | Device model name shown in Home Assistant |
 
 ## Topics
 
@@ -112,6 +114,7 @@ Host idrac1
 
 | Topic | Content |
 |-------|---------|
+| `homelab/idrac/fleet/status` | `online` or `error` (fleet availability) |
 | `homelab/idrac/summary` | Fleet summary JSON |
 | `homelab/idrac/total/actual_watts` | Total fleet power draw |
 | `homelab/idrac/total/last_min_avg_watts` | Total fleet 1-min average |
@@ -140,6 +143,12 @@ python3 powerMQTT.py --host idrac3 --metric psu1_input_voltage_v --plain
 
 # Custom config path
 python3 powerMQTT.py --config /etc/idrac/servers.json
+
+# Quiet mode — suppress JSON summary (for cron)
+python3 powerMQTT.py --quiet
+
+# Show version
+python3 powerMQTT.py --version
 
 # Compatibility helper for the old shell entry point
 ./powerConsumption.sh idrac1

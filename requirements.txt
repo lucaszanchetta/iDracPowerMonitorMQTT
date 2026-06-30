@@ -1,0 +1,3 @@
+paho-mqtt>=1.0
+pyghmi>=1.0
+pexpect>=4.0; sys_platform != "win32"
