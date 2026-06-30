@@ -34,6 +34,8 @@ def _env_int(name: str, default: str) -> int:
 
 MQTT_HOST = os.environ.get("IDRAC_MQTT_HOST", "127.0.0.1")
 MQTT_PORT = _env_int("IDRAC_MQTT_PORT", "1883")
+MQTT_USERNAME = os.environ.get("IDRAC_MQTT_USERNAME", "")
+MQTT_PASSWORD = os.environ.get("IDRAC_MQTT_PASSWORD", "")
 TOPIC_PREFIX = os.environ.get("IDRAC_MQTT_TOPIC_PREFIX", "homelab/idrac")
 HOME_ASSISTANT_DISCOVERY_PREFIX = os.environ.get(
     "HOME_ASSISTANT_DISCOVERY_PREFIX", "homeassistant"
@@ -565,6 +567,12 @@ def publish_messages_direct(messages: list[dict]) -> None:
     if not messages:
         return
 
+    auth_args = []
+    if MQTT_USERNAME:
+        auth_args.extend(["-u", MQTT_USERNAME])
+    if MQTT_PASSWORD:
+        auth_args.extend(["-P", MQTT_PASSWORD])
+
     try:
         from paho.mqtt import publish as mqtt_publish
     except ImportError:
@@ -581,6 +589,8 @@ def publish_messages_direct(messages: list[dict]) -> None:
                 "-m",
                 message["payload"],
             ]
+            if auth_args:
+                command.extend(auth_args)
             subprocess.run(
                 command,
                 check=True,
@@ -590,13 +600,15 @@ def publish_messages_direct(messages: list[dict]) -> None:
             )
         return
 
-    mqtt_publish.multiple(
-        messages,
-        hostname=MQTT_HOST,
-        port=MQTT_PORT,
-        client_id="idrac-power-mqtt",
-        keepalive=MQTT_PUBLISH_TIMEOUT_SECONDS,
-    )
+    mqtt_kwargs: dict = {
+        "hostname": MQTT_HOST,
+        "port": MQTT_PORT,
+        "client_id": "idrac-power-mqtt",
+        "keepalive": MQTT_PUBLISH_TIMEOUT_SECONDS,
+    }
+    if MQTT_USERNAME:
+        mqtt_kwargs["auth"] = {"username": MQTT_USERNAME, "password": MQTT_PASSWORD}
+    mqtt_publish.multiple(messages, **mqtt_kwargs)
 
 
 def publish_messages(messages: list[dict], config_path: str | None = None) -> None:
