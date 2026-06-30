@@ -35,6 +35,7 @@ def _env_int(name: str, default: str) -> int:
 
 MQTT_HOST = os.environ.get("IDRAC_MQTT_HOST", "127.0.0.1")
 MQTT_PORT = _env_int("IDRAC_MQTT_PORT", "1883")
+MQTT_QOS = _env_int("IDRAC_MQTT_QOS", "1")
 MQTT_USERNAME = os.environ.get("IDRAC_MQTT_USERNAME", "")
 MQTT_PASSWORD = os.environ.get("IDRAC_MQTT_PASSWORD", "")
 TOPIC_PREFIX = os.environ.get("IDRAC_MQTT_TOPIC_PREFIX", "homelab/idrac")
@@ -559,7 +560,7 @@ def collect_host(host: str, config_path: str | None = None, servers_by_name: dic
 
 
 def queue_topic(messages: list[dict], topic: str, payload: str) -> None:
-    messages.append({"topic": topic, "payload": payload, "retain": True})
+    messages.append({"topic": topic, "payload": payload, "retain": True, "qos": MQTT_QOS})
 
 
 def publish_messages_direct(messages: list[dict]) -> None:
@@ -582,6 +583,8 @@ def publish_messages_direct(messages: list[dict]) -> None:
                 MQTT_HOST,
                 "-p",
                 str(MQTT_PORT),
+                "-q",
+                str(message.get("qos", MQTT_QOS)),
                 "-r",
                 "-t",
                 message["topic"],
@@ -604,6 +607,7 @@ def publish_messages_direct(messages: list[dict]) -> None:
         "port": MQTT_PORT,
         "client_id": "idrac-power-mqtt",
         "keepalive": MQTT_PUBLISH_TIMEOUT_SECONDS,
+        "qos": MQTT_QOS,
     }
     if MQTT_USERNAME:
         mqtt_kwargs["auth"] = {"username": MQTT_USERNAME, "password": MQTT_PASSWORD}
