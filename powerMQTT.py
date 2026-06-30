@@ -17,11 +17,17 @@ from pathlib import Path
 __version__ = "1.1.0"
 
 _shutdown_event = threading.Event()
+_reload_config_event = threading.Event()
 
 
 def _handle_shutdown_signal(signum, frame):
     """Set the shutdown event on SIGTERM/SIGINT to begin graceful shutdown."""
     _shutdown_event.set()
+
+
+def _handle_reload_signal(signum, frame):
+    """Request config reload on SIGHUP."""
+    _reload_config_event.set()
 
 
 def _env_int(name: str, default: str) -> int:
@@ -1016,8 +1022,11 @@ def main() -> int:
 
     signal.signal(signal.SIGTERM, _handle_shutdown_signal)
     signal.signal(signal.SIGINT, _handle_shutdown_signal)
+    signal.signal(signal.SIGHUP, _handle_reload_signal)
 
     if not args.internal_publish_messages:
+        if _reload_config_event.is_set():
+            _reload_config_event.clear()
         servers = load_servers(args.config)
         servers_by_name = {s["name"]: s for s in servers}
         if args.host and args.host not in servers_by_name:

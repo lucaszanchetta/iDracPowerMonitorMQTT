@@ -1,0 +1,12 @@
+[Unit]
+Description=iDRAC Power Monitor MQTT Timer
+Documentation=https://github.com/lucaszanchetta/iDracPowerMonitorMQTT
+
+[Timer]
+OnCalendar=minutely
+RandomizedDelaySec=10
+AccuracySec=1
+Persistent=true
+
+[Install]
+WantedBy=timers.target

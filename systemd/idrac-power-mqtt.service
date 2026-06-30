@@ -1,0 +1,17 @@
+[Unit]
+Description=iDRAC Power Monitor MQTT Collector
+Documentation=https://github.com/lucaszanchetta/iDracPowerMonitorMQTT
+After=network-online.target mosquitto.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=nobody
+EnvironmentFile=/etc/idrac-power-mqtt/env
+ExecStart=/usr/local/bin/powerMQTT.py --config /etc/idrac-power-mqtt/servers.json
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=idrac-power-mqtt
+
+[Install]
+RequiredBy=idrac-power-mqtt.timer
