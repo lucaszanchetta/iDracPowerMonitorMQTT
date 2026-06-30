@@ -525,14 +525,21 @@ def collect_host(host: str, config_path: str | None = None, servers_by_name: dic
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         power_future = executor.submit(query_power_output, host, servers_by_name)
         ipmi_future = executor.submit(run_ipmi_subprocess, host, config_path)
-        query_mode, output = power_future.result()
-        try:
-            ipmi_metrics = ipmi_future.result()
-        except Exception as exc:  # noqa: BLE001
-            ipmi_metrics = {
-                "ipmi_metrics_error": str(exc),
-                "ambient_temp_error": str(exc),
-            }
+        futures = {power_future: "power", ipmi_future: "ipmi"}
+        results: dict[str, object] = {}
+        for future in concurrent.futures.as_completed(futures):
+            key = futures[future]
+            try:
+                results[key] = future.result()
+            except Exception as exc:  # noqa: BLE001
+                if key == "power":
+                    raise
+                results[key] = {
+                    "ipmi_metrics_error": str(exc),
+                    "ambient_temp_error": str(exc),
+                }
+        query_mode, output = results["power"]
+        ipmi_metrics = results.get("ipmi")
 
     snapshot = parse_cfg_output(host, query_mode, output)
     snapshot["ipmi_host"] = server["ipmi_host"]
