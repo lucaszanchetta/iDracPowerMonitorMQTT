@@ -2,6 +2,7 @@
 
 import argparse
 import concurrent.futures
+import contextlib
 import json
 import os
 import re
@@ -28,8 +29,8 @@ def _env_int(name: str, default: str) -> int:
     raw = os.environ.get(name, default)
     try:
         return int(raw)
-    except ValueError:
-        raise SystemExit(f"Environment variable {name} must be an integer, got: {raw!r}")
+    except ValueError as exc:
+        raise SystemExit(f"Environment variable {name} must be an integer, got: {raw!r}") from exc
 
 
 MQTT_HOST = os.environ.get("IDRAC_MQTT_HOST", "127.0.0.1")
@@ -189,8 +190,8 @@ def parse_args() -> argparse.Namespace:
 def server_config(host: str, servers_by_name: dict[str, dict]) -> dict:
     try:
         return servers_by_name[host]
-    except KeyError:
-        raise QueryError(f"unknown host {host}")
+    except KeyError as exc:
+        raise QueryError(f"unknown host {host}") from exc
 
 
 def script_path() -> str:
@@ -308,8 +309,8 @@ def run_interactive_racadm(host: str) -> str:
     """
     try:
         import pexpect
-    except ImportError:
-        raise QueryError("pexpect is required for interactive mode but is not installed")
+    except ImportError as exc:
+        raise QueryError("pexpect is required for interactive mode but is not installed") from exc
 
     if shutil.which("ssh") is None:
         raise QueryError("ssh is not available")
@@ -414,8 +415,8 @@ def collect_ipmi_metrics(server: dict) -> dict:
     Uses pyghmi for IPMI communication; returns error dict if not installed.
     """
     try:
-        from pyghmi.ipmi import command as ipmi_command
         import pyghmi.exceptions as ipmi_exceptions
+        from pyghmi.ipmi import command as ipmi_command
     except ImportError:
         return {"ipmi_metrics_error": "pyghmi is not installed"}
 
@@ -496,10 +497,8 @@ def collect_ipmi_metrics(server: dict) -> dict:
         return {"ipmi_metrics_error": str(exc)}
     finally:
         if ipmi is not None and getattr(ipmi, "ipmi_session", None) is not None:
-            try:
+            with contextlib.suppress(Exception):
                 ipmi.ipmi_session.logout()
-            except Exception:  # noqa: BLE001
-                pass
 
     metrics = {}
     if ambient_temp_c is not None:
