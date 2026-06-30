@@ -12,9 +12,6 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pexpect
-
-
 MQTT_HOST = os.environ.get("IDRAC_MQTT_HOST", "127.0.0.1")
 MQTT_PORT = int(os.environ.get("IDRAC_MQTT_PORT", "1883"))
 TOPIC_PREFIX = os.environ.get("IDRAC_MQTT_TOPIC_PREFIX", "homelab/idrac")
@@ -101,7 +98,7 @@ SINGLE_HOST_METRICS = tuple(sorted((*NUMERIC_KEYS.values(), *SINGLE_HOST_EXTRA_M
 
 
 class QueryError(RuntimeError):
-    pass
+    """Raised when an iDRAC query fails or returns unparseable output."""
 
 
 def parse_args() -> argparse.Namespace:
@@ -161,7 +158,8 @@ def script_path() -> str:
     return str(Path(__file__).resolve())
 
 
-def terminate_process_group(process) -> None:
+def terminate_process_group(process: subprocess.Popen) -> None:
+    """Kill a subprocess and its entire process group on POSIX systems."""
     if process.poll() is not None:
         return
     try:
@@ -232,6 +230,10 @@ def run_ipmi_subprocess(host: str, config_path: str | None = None) -> dict:
 
 
 def run_direct_racadm(host: str) -> str:
+    """Query iDRAC power config via direct SSH racadm command.
+
+    Raises QueryError on timeout, non-zero exit, or missing power data.
+    """
     command = [
         "ssh",
         "-o",
@@ -239,13 +241,16 @@ def run_direct_racadm(host: str) -> str:
         host,
         "racadm getconfig -g cfgServerPower",
     ]
-    result = subprocess.run(
-        command,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=DIRECT_SSH_TIMEOUT_SECONDS,
-    )
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=DIRECT_SSH_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise QueryError(f"direct query timed out for {host} after {DIRECT_SSH_TIMEOUT_SECONDS}s") from exc
     output = result.stdout.strip()
     if result.returncode == 0 and "cfgServerActualPowerConsumption" in output:
         return output
@@ -256,6 +261,16 @@ def run_direct_racadm(host: str) -> str:
 
 
 def run_interactive_racadm(host: str) -> str:
+    """Query iDRAC power config via interactive SSH RAC shell (for legacy firmware).
+
+    Falls back to pexpect for iDRAC units that don't support direct racadm.
+    Raises QueryError on timeout, missing pexpect, or missing power data.
+    """
+    try:
+        import pexpect
+    except ImportError:
+        raise QueryError("pexpect is required for interactive mode but is not installed")
+
     if shutil.which("ssh") is None:
         raise QueryError("ssh is not available")
 
@@ -283,17 +298,22 @@ def run_interactive_racadm(host: str) -> str:
 
 
 def query_power_output(host: str) -> tuple[str, str]:
+    """Query power data for a host, trying direct mode first then interactive.
+
+    Returns (query_mode, raw_output) where query_mode is "direct" or "interactive".
+    """
     mode = server_config(host)["mode"]
     if mode == "interactive":
         return "interactive", run_interactive_racadm(host)
 
     try:
         return "direct", run_direct_racadm(host)
-    except (QueryError, subprocess.TimeoutExpired):
+    except QueryError:
         return "interactive", run_interactive_racadm(host)
 
 
 def first_number(raw_value: str) -> float | int | None:
+    """Extract the first numeric value from a string, returning int if whole number."""
     match = re.search(r"-?\d+(?:\.\d+)?", raw_value)
     if not match:
         return None
@@ -310,6 +330,11 @@ def average(values: list[float]) -> float | None:
 
 
 def parse_cfg_output(host: str, query_mode: str, output: str) -> dict:
+    """Parse RACADM key=value output into a structured metrics dict.
+
+    Extracts numeric power/amperage values and raw timestamp/cumulative fields.
+    Raises QueryError if actual_watts cannot be parsed.
+    """
     payload = {
         "host": host,
         "query_mode": query_mode,
@@ -337,6 +362,11 @@ def parse_cfg_output(host: str, query_mode: str, output: str) -> dict:
 
 
 def collect_ipmi_metrics(server: dict) -> dict:
+    """Collect ambient temperature and PSU current/voltage via IPMI.
+
+    Returns a dict with sensor values or an ipmi_metrics_error key on failure.
+    Uses pyghmi for IPMI communication; returns error dict if not installed.
+    """
     try:
         from pyghmi.ipmi import command as ipmi_command
         import pyghmi.exceptions as ipmi_exceptions
@@ -418,23 +448,26 @@ def collect_ipmi_metrics(server: dict) -> dict:
 
     if psu_currents:
         metrics["psu_input_currents_a"] = psu_currents
-    if len(psu_currents) >= 1:
         metrics["psu1_input_current_a"] = psu_currents[0]
-    if len(psu_currents) >= 2:
-        metrics["psu2_input_current_a"] = psu_currents[1]
+        if len(psu_currents) >= 2:
+            metrics["psu2_input_current_a"] = psu_currents[1]
 
     if psu_voltages:
         metrics["psu_input_voltages_v"] = psu_voltages
         metrics["average_input_voltage_v"] = average(psu_voltages)
-    if len(psu_voltages) >= 1:
         metrics["psu1_input_voltage_v"] = psu_voltages[0]
-    if len(psu_voltages) >= 2:
-        metrics["psu2_input_voltage_v"] = psu_voltages[1]
+        if len(psu_voltages) >= 2:
+            metrics["psu2_input_voltage_v"] = psu_voltages[1]
 
     return metrics
 
 
 def collect_host(host: str, config_path: str | None = None) -> dict:
+    """Collect all metrics for a single host (power via SSH + IPMI sensors).
+
+    Runs power and IPMI queries concurrently. IPMI failures are captured as
+    error fields in the snapshot rather than failing the entire host.
+    """
     server = server_config(host)
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         power_future = executor.submit(query_power_output, host)
@@ -497,6 +530,11 @@ def publish_messages_direct(messages: list[dict]) -> None:
 
 
 def publish_messages(messages: list[dict], config_path: str | None = None) -> None:
+    """Publish MQTT messages via a subprocess to isolate broker failures.
+
+    Serializes messages to JSON and passes them via stdin to a child process
+    that handles the actual MQTT connection.
+    """
     payload = json.dumps(messages, separators=(",", ":"))
     run_internal_subprocess(
         extra_args=["--internal-publish-messages"],
@@ -755,14 +793,23 @@ def publish_host_error(messages: list[dict], host: str, error_message: str) -> N
 
 
 def summarize(results: list[dict], failures: list[dict]) -> dict:
+    """Build fleet-wide summary from individual host results.
+
+    Aggregates total power, average temperatures, and average voltages
+    across all successfully collected hosts.
+    """
     ambient_values = [item["ambient_temp_c"] for item in results if item.get("ambient_temp_c") is not None]
     average_input_voltage_values = [
         item["average_input_voltage_v"]
         for item in results
         if item.get("average_input_voltage_v") is not None
     ]
-    total_actual = sum(item.get("actual_watts", 0) for item in results)
-    total_last_min = sum(item.get("last_min_avg_watts", 0) for item in results)
+    total_actual = sum(item["actual_watts"] for item in results if item.get("actual_watts") is not None)
+    total_last_min = sum(
+        item["last_min_avg_watts"]
+        for item in results
+        if item.get("last_min_avg_watts") is not None
+    )
 
     summary = {
         "collected_at": datetime.now(timezone.utc).isoformat(),
@@ -805,6 +852,11 @@ def publish_summary(messages: list[dict], summary: dict) -> None:
 
 
 def collect_all(verbose: bool, config_path: str | None = None) -> tuple[list[dict], list[dict]]:
+    """Collect metrics from all configured servers concurrently.
+
+    Returns (ordered_results, failures) where results preserve the config order.
+    Failed hosts are captured in failures rather than raising.
+    """
     results_by_host = {}
     failures = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(SERVERS)) as executor:
@@ -854,6 +906,7 @@ def print_single_host(snapshot: dict, metric: str | None, plain: bool) -> int:
 
 
 def main() -> int:
+    """Entry point. Returns 0 on success, 1 on any host failure or error."""
     global SERVERS
     args = parse_args()
 
