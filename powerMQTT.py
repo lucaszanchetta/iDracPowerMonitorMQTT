@@ -420,8 +420,8 @@ def collect_ipmi_metrics(server: dict) -> dict:
     ipmi = None
     ambient_temp_c = None
     ambient_temp_error = None
-    psu_currents = []
-    psu_voltages = []
+    psu_currents_by_instance: dict[int, float] = {}
+    psu_voltages_by_instance: dict[int, float] = {}
 
     try:
         ipmi = ipmi_command.Command(
@@ -470,12 +470,20 @@ def collect_ipmi_metrics(server: dict) -> dict:
 
             if sensor_type == "Current" and sensor_name == "Current" and units == "A":
                 if value is not None:
-                    psu_currents.append(value)
+                    instance = getattr(sensor, "entity_instance", None)
+                    if instance is not None:
+                        psu_currents_by_instance[instance] = value
+                    else:
+                        psu_currents_by_instance[len(psu_currents_by_instance)] = value
                 continue
 
             if sensor_type == "Voltage" and sensor_name == "Voltage" and units == "V":
                 if value is not None:
-                    psu_voltages.append(value)
+                    instance = getattr(sensor, "entity_instance", None)
+                    if instance is not None:
+                        psu_voltages_by_instance[instance] = value
+                    else:
+                        psu_voltages_by_instance[len(psu_voltages_by_instance)] = value
                 continue
 
         if ambient_temp_c is None:
@@ -499,13 +507,15 @@ def collect_ipmi_metrics(server: dict) -> dict:
     if ambient_temp_error:
         metrics["ambient_temp_error"] = ambient_temp_error
 
-    if psu_currents:
+    if psu_currents_by_instance:
+        psu_currents = [v for _, v in sorted(psu_currents_by_instance.items())]
         metrics["psu_input_currents_a"] = psu_currents
         metrics["psu1_input_current_a"] = psu_currents[0]
         if len(psu_currents) >= 2:
             metrics["psu2_input_current_a"] = psu_currents[1]
 
-    if psu_voltages:
+    if psu_voltages_by_instance:
+        psu_voltages = [v for _, v in sorted(psu_voltages_by_instance.items())]
         metrics["psu_input_voltages_v"] = psu_voltages
         metrics["average_input_voltage_v"] = average(psu_voltages)
         metrics["psu1_input_voltage_v"] = psu_voltages[0]
