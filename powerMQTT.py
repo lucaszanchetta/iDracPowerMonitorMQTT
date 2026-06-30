@@ -47,9 +47,6 @@ DISCOVERY_EXPIRE_AFTER_SECONDS = _env_int("IDRAC_DISCOVERY_EXPIRE_AFTER_SECONDS"
 SSH_CONNECT_TIMEOUT_SECONDS = _env_int("IDRAC_SSH_CONNECT_TIMEOUT_SECONDS", "5")
 DEVICE_MODEL = os.environ.get("IDRAC_DEVICE_MODEL", "iDRAC")
 
-SERVERS: list[dict] = []
-
-
 def load_servers(config_path: str) -> list[dict]:
     """Load and validate server definitions from a JSON config file.
 
@@ -179,11 +176,11 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def server_config(host: str) -> dict:
-    for server in SERVERS:
-        if server["name"] == host:
-            return server
-    raise QueryError(f"unknown host {host}")
+def server_config(host: str, servers_by_name: dict[str, dict]) -> dict:
+    try:
+        return servers_by_name[host]
+    except KeyError:
+        raise QueryError(f"unknown host {host}")
 
 
 def script_path() -> str:
@@ -336,12 +333,12 @@ def run_interactive_racadm(host: str) -> str:
             child.close(force=True)
 
 
-def query_power_output(host: str) -> tuple[str, str]:
+def query_power_output(host: str, servers_by_name: dict[str, dict]) -> tuple[str, str]:
     """Query power data for a host, trying direct mode first then interactive.
 
     Returns (query_mode, raw_output) where query_mode is "direct" or "interactive".
     """
-    mode = server_config(host)["mode"]
+    mode = server_config(host, servers_by_name)["mode"]
     if mode == "interactive":
         return "interactive", run_interactive_racadm(host)
 
@@ -510,15 +507,15 @@ def collect_ipmi_metrics(server: dict) -> dict:
     return metrics
 
 
-def collect_host(host: str, config_path: str | None = None) -> dict:
+def collect_host(host: str, config_path: str | None = None, servers_by_name: dict[str, dict] | None = None) -> dict:
     """Collect all metrics for a single host (power via SSH + IPMI sensors).
 
     Runs power and IPMI queries concurrently. IPMI failures are captured as
     error fields in the snapshot rather than failing the entire host.
     """
-    server = server_config(host)
+    server = server_config(host, servers_by_name)
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        power_future = executor.submit(query_power_output, host)
+        power_future = executor.submit(query_power_output, host, servers_by_name)
         ipmi_future = executor.submit(run_ipmi_subprocess, host, config_path)
         query_mode, output = power_future.result()
         try:
@@ -660,8 +657,8 @@ def ha_sensor_config(
     return payload
 
 
-def publish_home_assistant_discovery(messages: list[dict]) -> None:
-    for server in SERVERS:
+def publish_home_assistant_discovery(messages: list[dict], servers: list[dict]) -> None:
+    for server in servers:
         host = server["name"]
         base_topic = f"{TOPIC_PREFIX}/{host}"
         device = host_device(host)
@@ -913,7 +910,7 @@ def publish_summary(messages: list[dict], summary: dict) -> None:
         )
 
 
-def collect_all(verbose: bool, config_path: str | None = None) -> tuple[list[dict], list[dict]]:
+def collect_all(verbose: bool, config_path: str | None = None, servers: list[dict] | None = None, servers_by_name: dict[str, dict] | None = None) -> tuple[list[dict], list[dict]]:
     """Collect metrics from all configured servers concurrently.
 
     Returns (ordered_results, failures) where results preserve the config order.
@@ -921,10 +918,10 @@ def collect_all(verbose: bool, config_path: str | None = None) -> tuple[list[dic
     """
     results_by_host = {}
     failures = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(SERVERS)) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(servers)) as executor:
         future_map = {
-            executor.submit(collect_host, server["name"], config_path): server["name"]
-            for server in SERVERS
+            executor.submit(collect_host, server["name"], config_path, servers_by_name): server["name"]
+            for server in servers
         }
         for future in concurrent.futures.as_completed(future_map):
             host = future_map[future]
@@ -946,7 +943,7 @@ def collect_all(verbose: bool, config_path: str | None = None) -> tuple[list[dic
 
     ordered_results = [
         results_by_host[server["name"]]
-        for server in SERVERS
+        for server in servers
         if server["name"] in results_by_host
     ]
     return ordered_results, failures
@@ -970,14 +967,14 @@ def print_single_host(snapshot: dict, metric: str | None, plain: bool) -> int:
 
 def main() -> int:
     """Entry point. Returns 0 on success, 1 on any host failure or error."""
-    global SERVERS
     args = parse_args()
 
     if not args.internal_publish_messages:
-        SERVERS = load_servers(args.config)
-        if args.host and args.host not in {s["name"] for s in SERVERS}:
+        servers = load_servers(args.config)
+        servers_by_name = {s["name"]: s for s in servers}
+        if args.host and args.host not in servers_by_name:
             print(
-                f"unknown host '{args.host}', available: {', '.join(s['name'] for s in SERVERS)}",
+                f"unknown host '{args.host}', available: {', '.join(s['name'] for s in servers)}",
                 file=sys.stderr,
             )
             return 1
@@ -1001,12 +998,12 @@ def main() -> int:
         if not args.host:
             print("--internal-query-ipmi requires --host", file=sys.stderr)
             return 1
-        print(json.dumps(collect_ipmi_metrics(server_config(args.host)), separators=(",", ":")))
+        print(json.dumps(collect_ipmi_metrics(server_config(args.host, servers_by_name)), separators=(",", ":")))
         return 0
 
     if args.host:
         try:
-            snapshot = collect_host(args.host, config_path=args.config)
+            snapshot = collect_host(args.host, config_path=args.config, servers_by_name=servers_by_name)
         except Exception as exc:  # noqa: BLE001
             print(f"{args.host}: {exc}", file=sys.stderr)
             return 1
@@ -1016,7 +1013,7 @@ def main() -> int:
         print("neither paho-mqtt nor mosquitto_pub is available", file=sys.stderr)
         return 1
 
-    results, failures = collect_all(args.verbose, config_path=args.config)
+    results, failures = collect_all(args.verbose, config_path=args.config, servers=servers, servers_by_name=servers_by_name)
     summary = summarize(results, failures)
 
     if args.dry_run:
@@ -1025,7 +1022,7 @@ def main() -> int:
 
     mqtt_messages = []
     if PUBLISH_HOME_ASSISTANT_DISCOVERY:
-        publish_home_assistant_discovery(mqtt_messages)
+        publish_home_assistant_discovery(mqtt_messages, servers)
 
     for snapshot in results:
         publish_host_metrics(mqtt_messages, snapshot)
