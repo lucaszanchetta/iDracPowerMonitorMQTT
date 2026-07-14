@@ -1,6 +1,5 @@
 import json
 import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -103,10 +102,9 @@ class TestParseCfgOutput:
 
 class TestLoadServers:
     def _write_config(self, data):
-        f = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
-        json.dump(data, f)
-        f.close()
-        return f.name
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(data, f)
+            return f.name
 
     def test_valid_config(self):
         path = self._write_config([{"name": "idrac1", "mode": "direct", "ipmi_host": "10.0.0.1"}])
@@ -137,11 +135,11 @@ class TestLoadServers:
             powerMQTT.load_servers("/nonexistent/servers.json")
 
     def test_invalid_json(self):
-        f = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
-        f.write("not json")
-        f.close()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            f.write("not json")
+            name = f.name
         with pytest.raises(SystemExit, match="Invalid JSON"):
-            powerMQTT.load_servers(f.name)
+            powerMQTT.load_servers(name)
 
     def test_empty_array_rejected(self):
         path = self._write_config([])

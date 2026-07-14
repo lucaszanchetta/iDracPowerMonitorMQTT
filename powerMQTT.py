@@ -14,7 +14,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 _shutdown_event = threading.Event()
 _reload_config_event = threading.Event()
@@ -45,9 +45,7 @@ MQTT_QOS = _env_int("IDRAC_MQTT_QOS", "1")
 MQTT_USERNAME = os.environ.get("IDRAC_MQTT_USERNAME", "")
 MQTT_PASSWORD = os.environ.get("IDRAC_MQTT_PASSWORD", "")
 TOPIC_PREFIX = os.environ.get("IDRAC_MQTT_TOPIC_PREFIX", "homelab/idrac")
-HOME_ASSISTANT_DISCOVERY_PREFIX = os.environ.get(
-    "HOME_ASSISTANT_DISCOVERY_PREFIX", "homeassistant"
-)
+HOME_ASSISTANT_DISCOVERY_PREFIX = os.environ.get("HOME_ASSISTANT_DISCOVERY_PREFIX", "homeassistant")
 PUBLISH_HOME_ASSISTANT_DISCOVERY = (
     os.environ.get("IDRAC_PUBLISH_HOME_ASSISTANT_DISCOVERY", "1") != "0"
 )
@@ -58,12 +56,12 @@ MQTT_PUBLISH_TIMEOUT_SECONDS = _env_int("IDRAC_MQTT_PUBLISH_TIMEOUT_SECONDS", "1
 IDRAC_PROMPT = r"/admin1->\s*"
 IPMI_USER = os.environ.get("IDRAC_IPMI_USER", "root")
 IPMI_PASSWORD = os.environ.get("IDRAC_IPMI_PASSWORD", "calvin")
-AMBIENT_TEMPERATURE_SENSOR = os.environ.get(
-    "IDRAC_AMBIENT_TEMPERATURE_SENSOR", "Ambient Temp"
-)
+AMBIENT_TEMPERATURE_SENSOR = os.environ.get("IDRAC_AMBIENT_TEMPERATURE_SENSOR", "Ambient Temp")
 DISCOVERY_EXPIRE_AFTER_SECONDS = _env_int("IDRAC_DISCOVERY_EXPIRE_AFTER_SECONDS", "180")
 SSH_CONNECT_TIMEOUT_SECONDS = _env_int("IDRAC_SSH_CONNECT_TIMEOUT_SECONDS", "5")
 DEVICE_MODEL = os.environ.get("IDRAC_DEVICE_MODEL", "iDRAC")
+COLLECTION_INTERVAL_SECONDS = _env_int("IDRAC_COLLECTION_INTERVAL_SECONDS", "0")
+
 
 def load_servers(config_path: str) -> list[dict]:
     """Load and validate server definitions from a JSON config file.
@@ -74,9 +72,7 @@ def load_servers(config_path: str) -> list[dict]:
     if not path.exists():
         example = path.with_name("servers.example.json")
         raise SystemExit(
-            f"Config file not found: {path}\n"
-            f"Copy the example and edit it:\n"
-            f"  cp {example} {path}"
+            f"Config file not found: {path}\nCopy the example and edit it:\n  cp {example} {path}"
         )
     try:
         servers = json.loads(path.read_text())
@@ -101,6 +97,7 @@ def load_servers(config_path: str) -> list[dict]:
             )
         entry.setdefault("ipmi_host", name)
     return servers
+
 
 NUMERIC_KEYS = {
     "cfgServerPowerStatus": "power_status",
@@ -283,9 +280,12 @@ def run_direct_racadm(host: str) -> str:
     """
     command = [
         "ssh",
-        "-o", "BatchMode=yes",
-        "-o", f"ConnectTimeout={SSH_CONNECT_TIMEOUT_SECONDS}",
-        "-o", "StrictHostKeyChecking=accept-new",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        f"ConnectTimeout={SSH_CONNECT_TIMEOUT_SECONDS}",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
         host,
         "racadm getconfig -g cfgServerPower",
     ]
@@ -298,7 +298,9 @@ def run_direct_racadm(host: str) -> str:
             timeout=DIRECT_SSH_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as exc:
-        raise QueryError(f"direct query timed out for {host} after {DIRECT_SSH_TIMEOUT_SECONDS}s") from exc
+        raise QueryError(
+            f"direct query timed out for {host} after {DIRECT_SSH_TIMEOUT_SECONDS}s"
+        ) from exc
     output = result.stdout.strip()
     if result.returncode == 0 and "cfgServerActualPowerConsumption" in output:
         return output
@@ -326,9 +328,12 @@ def run_interactive_racadm(host: str) -> str:
         "ssh",
         [
             "-tt",
-            "-o", "BatchMode=yes",
-            "-o", f"ConnectTimeout={SSH_CONNECT_TIMEOUT_SECONDS}",
-            "-o", "StrictHostKeyChecking=accept-new",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            f"ConnectTimeout={SSH_CONNECT_TIMEOUT_SECONDS}",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
             host,
         ],
         encoding="utf-8",
@@ -533,7 +538,9 @@ def collect_ipmi_metrics(server: dict) -> dict:
     return metrics
 
 
-def collect_host(host: str, config_path: str | None = None, servers_by_name: dict[str, dict] | None = None) -> dict:
+def collect_host(
+    host: str, config_path: str | None = None, servers_by_name: dict[str, dict] | None = None
+) -> dict:
     """Collect all metrics for a single host (power via SSH + IPMI sensors).
 
     Runs power and IPMI queries concurrently. IPMI failures are captured as
@@ -846,7 +853,9 @@ def publish_host_metrics(messages: list[dict], snapshot: dict) -> None:
         json.dumps(temperature_payload, separators=(",", ":")),
     )
     if snapshot.get("ambient_temp_c") is not None:
-        queue_topic(messages, f"{base_topic}/temperature/ambient_c", str(snapshot["ambient_temp_c"]))
+        queue_topic(
+            messages, f"{base_topic}/temperature/ambient_c", str(snapshot["ambient_temp_c"])
+        )
 
     electrical_payload = {
         "host": host,
@@ -900,17 +909,19 @@ def summarize(results: list[dict], failures: list[dict]) -> dict:
     Aggregates total power, average temperatures, and average voltages
     across all successfully collected hosts.
     """
-    ambient_values = [item["ambient_temp_c"] for item in results if item.get("ambient_temp_c") is not None]
+    ambient_values = [
+        item["ambient_temp_c"] for item in results if item.get("ambient_temp_c") is not None
+    ]
     average_input_voltage_values = [
         item["average_input_voltage_v"]
         for item in results
         if item.get("average_input_voltage_v") is not None
     ]
-    total_actual = sum(item["actual_watts"] for item in results if item.get("actual_watts") is not None)
+    total_actual = sum(
+        item["actual_watts"] for item in results if item.get("actual_watts") is not None
+    )
     total_last_min = sum(
-        item["last_min_avg_watts"]
-        for item in results
-        if item.get("last_min_avg_watts") is not None
+        item["last_min_avg_watts"] for item in results if item.get("last_min_avg_watts") is not None
     )
 
     summary = {
@@ -942,7 +953,9 @@ def publish_summary(messages: list[dict], summary: dict) -> None:
     queue_topic(messages, f"{fleet_base}/status", "online" if has_hosts else "error")
     queue_topic(messages, f"{TOPIC_PREFIX}/summary", json.dumps(summary, separators=(",", ":")))
     queue_topic(messages, f"{TOPIC_PREFIX}/total/actual_watts", str(summary["actual_watts"]))
-    queue_topic(messages, f"{TOPIC_PREFIX}/total/last_min_avg_watts", str(summary["last_min_avg_watts"]))
+    queue_topic(
+        messages, f"{TOPIC_PREFIX}/total/last_min_avg_watts", str(summary["last_min_avg_watts"])
+    )
     if summary.get("average_ambient_temp_c") is not None:
         queue_topic(
             messages,
@@ -957,7 +970,12 @@ def publish_summary(messages: list[dict], summary: dict) -> None:
         )
 
 
-def collect_all(verbose: bool, config_path: str | None = None, servers: list[dict] | None = None, servers_by_name: dict[str, dict] | None = None) -> tuple[list[dict], list[dict]]:
+def collect_all(
+    verbose: bool,
+    config_path: str | None = None,
+    servers: list[dict] | None = None,
+    servers_by_name: dict[str, dict] | None = None,
+) -> tuple[list[dict], list[dict]]:
     """Collect metrics from all configured servers concurrently.
 
     Returns (ordered_results, failures) where results preserve the config order.
@@ -993,9 +1011,7 @@ def collect_all(verbose: bool, config_path: str | None = None, servers: list[dic
                     print(f"{host}: error {exc}", file=sys.stderr)
 
     ordered_results = [
-        results_by_host[server["name"]]
-        for server in servers
-        if server["name"] in results_by_host
+        results_by_host[server["name"]] for server in servers if server["name"] in results_by_host
     ]
     return ordered_results, failures
 
@@ -1013,6 +1029,68 @@ def print_single_host(snapshot: dict, metric: str | None, plain: bool) -> int:
         return 0
 
     print(json.dumps(snapshot, indent=2, sort_keys=True))
+    return 0
+
+
+def _run_collection(
+    args: argparse.Namespace, servers: list[dict], servers_by_name: dict[str, dict]
+) -> int:
+    """Run one full collect+publish cycle. Returns 0 on success, 1 on any failure."""
+    if not args.dry_run and not mqtt_publish_is_available():
+        print("neither paho-mqtt nor mosquitto_pub is available", file=sys.stderr)
+        return 1
+
+    results, failures = collect_all(
+        args.verbose, config_path=args.config, servers=servers, servers_by_name=servers_by_name
+    )
+    summary = summarize(results, failures)
+
+    if args.dry_run:
+        print(json.dumps({"hosts": results, "summary": summary}, indent=2, sort_keys=True))
+        return 1 if failures else 0
+
+    mqtt_messages = []
+    if PUBLISH_HOME_ASSISTANT_DISCOVERY:
+        publish_home_assistant_discovery(mqtt_messages, servers)
+
+    for snapshot in results:
+        publish_host_metrics(mqtt_messages, snapshot)
+    for failure in failures:
+        publish_host_error(mqtt_messages, failure["host"], failure["error"])
+    publish_summary(mqtt_messages, summary)
+    publish_messages(mqtt_messages, config_path=args.config)
+
+    if not args.quiet:
+        print(
+            json.dumps(
+                {
+                    "published_hosts": [item["host"] for item in results],
+                    "failed_hosts": failures,
+                    "summary": summary,
+                },
+                sort_keys=True,
+            )
+        )
+    return 1 if failures else 0
+
+
+def _run_daemon_loop(
+    args: argparse.Namespace, servers: list[dict], servers_by_name: dict[str, dict], interval: int
+) -> int:
+    """Persistent collect-publish loop with SIGHUP config reload and clean shutdown.
+
+    Checks _reload_config_event at the top of each cycle to re-read servers.json.
+    Uses _shutdown_event.wait() for interruptible sleep so SIGTERM/SIGINT
+    causes a clean exit.
+    """
+    while not _shutdown_event.is_set():
+        if _reload_config_event.is_set():
+            _reload_config_event.clear()
+            servers = load_servers(args.config)
+            servers_by_name = {s["name"]: s for s in servers}
+        _run_collection(args, servers, servers_by_name)
+        if _shutdown_event.wait(timeout=interval):
+            break
     return 0
 
 
@@ -1055,51 +1133,33 @@ def main() -> int:
         if not args.host:
             print("--internal-query-ipmi requires --host", file=sys.stderr)
             return 1
-        print(json.dumps(collect_ipmi_metrics(server_config(args.host, servers_by_name)), separators=(",", ":")))
+        print(
+            json.dumps(
+                collect_ipmi_metrics(server_config(args.host, servers_by_name)),
+                separators=(",", ":"),
+            )
+        )
         return 0
 
     if args.host:
+        if COLLECTION_INTERVAL_SECONDS > 0:
+            print(
+                "ignoring IDRAC_COLLECTION_INTERVAL_SECONDS: --host/--metric forces single-shot",
+                file=sys.stderr,
+            )
         try:
-            snapshot = collect_host(args.host, config_path=args.config, servers_by_name=servers_by_name)
+            snapshot = collect_host(
+                args.host, config_path=args.config, servers_by_name=servers_by_name
+            )
         except Exception as exc:  # noqa: BLE001
             print(f"{args.host}: {exc}", file=sys.stderr)
             return 1
         return print_single_host(snapshot, args.metric, args.plain)
 
-    if not args.dry_run and not mqtt_publish_is_available():
-        print("neither paho-mqtt nor mosquitto_pub is available", file=sys.stderr)
-        return 1
+    if COLLECTION_INTERVAL_SECONDS > 0:
+        return _run_daemon_loop(args, servers, servers_by_name, COLLECTION_INTERVAL_SECONDS)
 
-    results, failures = collect_all(args.verbose, config_path=args.config, servers=servers, servers_by_name=servers_by_name)
-    summary = summarize(results, failures)
-
-    if args.dry_run:
-        print(json.dumps({"hosts": results, "summary": summary}, indent=2, sort_keys=True))
-        return 1 if failures else 0
-
-    mqtt_messages = []
-    if PUBLISH_HOME_ASSISTANT_DISCOVERY:
-        publish_home_assistant_discovery(mqtt_messages, servers)
-
-    for snapshot in results:
-        publish_host_metrics(mqtt_messages, snapshot)
-    for failure in failures:
-        publish_host_error(mqtt_messages, failure["host"], failure["error"])
-    publish_summary(mqtt_messages, summary)
-    publish_messages(mqtt_messages, config_path=args.config)
-
-    if not args.quiet:
-        print(
-            json.dumps(
-                {
-                    "published_hosts": [item["host"] for item in results],
-                    "failed_hosts": failures,
-                    "summary": summary,
-                },
-                sort_keys=True,
-            )
-        )
-    return 1 if failures else 0
+    return _run_collection(args, servers, servers_by_name)
 
 
 if __name__ == "__main__":

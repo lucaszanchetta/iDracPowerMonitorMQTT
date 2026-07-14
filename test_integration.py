@@ -1,6 +1,5 @@
 import json
 import tempfile
-from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -39,10 +38,9 @@ SAMPLE_IPMI_METRICS = {
 
 
 def _write_servers_config(servers):
-    f = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
-    json.dump(servers, f)
-    f.close()
-    return f.name
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(servers, f)
+        return f.name
 
 
 class TestCollectHostEndToEnd:
@@ -53,7 +51,9 @@ class TestCollectHostEndToEnd:
         servers_by_name = {s["name"]: s for s in servers}
 
         with (
-            mock.patch("powerMQTT.query_power_output", return_value=("direct", SAMPLE_RACADM_OUTPUT)),
+            mock.patch(
+                "powerMQTT.query_power_output", return_value=("direct", SAMPLE_RACADM_OUTPUT)
+            ),
             mock.patch("powerMQTT.run_ipmi_subprocess", return_value=SAMPLE_IPMI_METRICS),
         ):
             snapshot = powerMQTT.collect_host("idrac1", servers_by_name=servers_by_name)
@@ -74,7 +74,9 @@ class TestCollectHostEndToEnd:
         servers_by_name = {s["name"]: s for s in servers}
 
         with (
-            mock.patch("powerMQTT.query_power_output", return_value=("direct", SAMPLE_RACADM_OUTPUT)),
+            mock.patch(
+                "powerMQTT.query_power_output", return_value=("direct", SAMPLE_RACADM_OUTPUT)
+            ),
             mock.patch("powerMQTT.run_ipmi_subprocess", side_effect=RuntimeError("IPMI down")),
         ):
             snapshot = powerMQTT.collect_host("idrac1", servers_by_name=servers_by_name)
@@ -168,8 +170,20 @@ class TestSummarize:
 
     def test_summarize_basic(self):
         results = [
-            {"host": "idrac1", "actual_watts": 100, "last_min_avg_watts": 95, "ambient_temp_c": 25.0, "average_input_voltage_v": 230.0},
-            {"host": "idrac2", "actual_watts": 200, "last_min_avg_watts": 195, "ambient_temp_c": 28.0, "average_input_voltage_v": 229.0},
+            {
+                "host": "idrac1",
+                "actual_watts": 100,
+                "last_min_avg_watts": 95,
+                "ambient_temp_c": 25.0,
+                "average_input_voltage_v": 230.0,
+            },
+            {
+                "host": "idrac2",
+                "actual_watts": 200,
+                "last_min_avg_watts": 195,
+                "ambient_temp_c": 28.0,
+                "average_input_voltage_v": 229.0,
+            },
         ]
         failures = []
 
@@ -184,7 +198,13 @@ class TestSummarize:
 
     def test_summarize_with_failures(self):
         results = [
-            {"host": "idrac1", "actual_watts": 100, "last_min_avg_watts": 95, "ambient_temp_c": 25.0, "average_input_voltage_v": None},
+            {
+                "host": "idrac1",
+                "actual_watts": 100,
+                "last_min_avg_watts": 95,
+                "ambient_temp_c": 25.0,
+                "average_input_voltage_v": None,
+            },
         ]
         failures = [{"host": "idrac2", "error": "timeout"}]
 
@@ -357,6 +377,7 @@ class TestMqttAuth:
         monkeypatch.setenv("IDRAC_MQTT_PASSWORD", "testpass")
 
         import importlib
+
         importlib.reload(powerMQTT)
 
         assert powerMQTT.MQTT_USERNAME == "testuser"

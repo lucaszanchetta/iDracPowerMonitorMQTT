@@ -13,7 +13,7 @@ for zero-config sensor setup.
 - Supports direct and interactive (legacy firmware) SSH modes
 - Configurable via `servers.json` and environment variables
 - Built-in timeouts and error isolation per host
-- SIGHUP handler registered; config is re-read from disk on every invocation (single-shot run model — see Scheduling)
+- SIGHUP triggers config reload in daemon mode; single-shot (default) re-reads config on every invocation naturally (see Scheduling)
 - Docker container and systemd timer deployment options
 - MQTT authentication (username/password) and configurable QoS
 
@@ -96,8 +96,9 @@ Host idrac1
 | `IDRAC_DISCOVERY_EXPIRE_AFTER_SECONDS` | `180` | HA sensor expiry time |
 | `IDRAC_SSH_CONNECT_TIMEOUT_SECONDS` | `5` | SSH connection timeout (fail fast on unreachable hosts) |
 | `IDRAC_DEVICE_MODEL` | `iDRAC` | Device model name shown in Home Assistant |
+| `IDRAC_COLLECTION_INTERVAL_SECONDS` | `0` | Collection interval in seconds for daemon mode. `0` = single-shot (default). When > `0`, the script loops: collect → publish → sleep → repeat, and SIGHUP triggers a config reload on the next cycle. |
 
-> **Hot-reload:** A `SIGHUP` handler is registered, but the script runs as a single-shot invocation — each run re-reads `servers.json` fresh from disk. `SIGHUP` has no additional effect in the current single-shot model; for persistent-daemon hot-reload, wrap the script in a supervisor that re-executes it on `SIGHUP`.
+> **Hot-reload:** In single-shot mode (`IDRAC_COLLECTION_INTERVAL_SECONDS=0`, the default), each invocation re-reads `servers.json` from disk — `SIGHUP` has no additional effect. In [daemon mode](#daemon-mode) (`IDRAC_COLLECTION_INTERVAL_SECONDS > 0`), sending `SIGHUP` to the running process causes the next collection cycle to re-read `servers.json` without restarting the process.
 
 ## Topics
 
@@ -169,6 +170,27 @@ Example cron entry (every minute, with lock to prevent overlap):
 ```cron
 * * * * * /usr/bin/flock -n /tmp/idrac-power-mqtt.lock /usr/bin/timeout 55s /usr/bin/python3 /path/to/powerMQTT.py >> /path/to/powerMQTT.log 2>&1
 ```
+
+### Daemon mode
+
+When `IDRAC_COLLECTION_INTERVAL_SECONDS` is set to a positive integer, the script enters a persistent loop: collect all hosts → publish → sleep for the interval → repeat. This mode makes the SIGHUP handler meaningful — sending `SIGHUP` to the process causes the next cycle to re-read `servers.json`.
+
+```bash
+# Collect and publish every 60 seconds
+IDRAC_COLLECTION_INTERVAL_SECONDS=60 python3 powerMQTT.py
+
+# With custom config
+IDRAC_COLLECTION_INTERVAL_SECONDS=60 python3 powerMQTT.py --config /etc/idrac/servers.json
+```
+
+**Signal handling in daemon mode:**
+
+| Signal | Behavior |
+|--------|----------|
+| `SIGTERM` / `SIGINT` | Exits cleanly — completes the current collection cycle (if one is in progress), then exits. If the process is sleeping between cycles, it exits immediately. |
+| `SIGHUP` | Re-reads `servers.json` at the start of the next collection cycle. No restart required. |
+
+> **Note:** `--host` and `--metric` force single-shot mode even when `IDRAC_COLLECTION_INTERVAL_SECONDS` is set. The script prints a warning to stderr and runs once.
 
 ## Docker
 
