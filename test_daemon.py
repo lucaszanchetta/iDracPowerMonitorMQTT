@@ -102,6 +102,71 @@ class TestDaemonMode:
         assert call_count[0] == 3
 
     # ------------------------------------------------------------------
+    # Daemon mode — publish failure survival
+    # ------------------------------------------------------------------
+
+    def test_daemon_survives_publish_failure(self):
+        """_run_collection raises Exception — daemon loop does NOT crash."""
+        args = self._make_args()
+        servers, by_name = self._servers()
+
+        call_count = [0]
+
+        def run_collection_side(_args, _servers, _by_name):
+            call_count[0] += 1
+            if call_count[0] >= 3:
+                powerMQTT._shutdown_event.set()
+            raise Exception("broker down")
+
+        with patch("powerMQTT._run_collection", side_effect=run_collection_side):
+            powerMQTT._run_daemon_loop(args, servers, by_name, interval=0.01)
+
+        # All three calls raised, but the loop survived all of them
+        assert call_count[0] == 3
+
+    # ------------------------------------------------------------------
+    # Daemon mode — bad config on SIGHUP survival
+    # ------------------------------------------------------------------
+
+    def test_daemon_survives_bad_config_on_sighup(self):
+        """load_servers raises SystemExit on SIGHUP — daemon keeps running with previous config."""
+        servers, by_name = self._servers()
+
+        call_count = [0]
+
+        def run_collection_side(_args, _servers, _by_name):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # Trigger a reload before the next cycle
+                powerMQTT._reload_config_event.set()
+            if call_count[0] >= 2:
+                powerMQTT._shutdown_event.set()
+            return 0
+
+        # First call (initial, before loop) succeeds; second call (reload) fails
+        load_results = [servers, SystemExit("invalid JSON")]
+
+        def load_side(config_path):
+            val = load_results.pop(0)
+            if isinstance(val, BaseException):
+                raise val
+            return val
+
+        with (
+            patch("powerMQTT.COLLECTION_INTERVAL_SECONDS", 0.01),
+            patch("powerMQTT.load_servers", side_effect=load_side) as mock_load,
+            patch("powerMQTT._run_collection", side_effect=run_collection_side),
+            patch("powerMQTT.parse_args") as mock_parse,
+        ):
+            mock_parse.return_value = self._make_args()
+            result = powerMQTT.main()
+
+        assert result == 0
+        assert mock_load.call_count == 2  # initial + failed reload
+        # Two collection cycles completed (one before reload, one after)
+        assert call_count[0] == 2
+
+    # ------------------------------------------------------------------
     # Daemon mode — SIGTERM clean exit
     # ------------------------------------------------------------------
 

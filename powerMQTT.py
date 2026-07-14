@@ -1086,9 +1086,17 @@ def _run_daemon_loop(
     while not _shutdown_event.is_set():
         if _reload_config_event.is_set():
             _reload_config_event.clear()
-            servers = load_servers(args.config)
-            servers_by_name = {s["name"]: s for s in servers}
-        _run_collection(args, servers, servers_by_name)
+            try:
+                servers = load_servers(args.config)
+                servers_by_name = {s["name"]: s for s in servers}
+            except (Exception, SystemExit) as exc:
+                print(f"config reload failed: {exc}; keeping previous config", file=sys.stderr)
+                continue
+        try:
+            _run_collection(args, servers, servers_by_name)
+        except Exception as exc:
+            print(f"daemon cycle failed: {exc}; continuing to next cycle", file=sys.stderr)
+            continue
         if _shutdown_event.wait(timeout=interval):
             break
     return 0
