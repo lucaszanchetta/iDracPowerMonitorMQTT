@@ -13,7 +13,7 @@ for zero-config sensor setup.
 - Supports direct and interactive (legacy firmware) SSH modes
 - Configurable via `servers.json` and environment variables
 - Built-in timeouts and error isolation per host
-- SIGHUP hot-reload support (re-reads config without full restart)
+- SIGHUP handler registered; config is re-read from disk on every invocation (single-shot run model — see Scheduling)
 - Docker container and systemd timer deployment options
 - MQTT authentication (username/password) and configurable QoS
 
@@ -97,7 +97,7 @@ Host idrac1
 | `IDRAC_SSH_CONNECT_TIMEOUT_SECONDS` | `5` | SSH connection timeout (fail fast on unreachable hosts) |
 | `IDRAC_DEVICE_MODEL` | `iDRAC` | Device model name shown in Home Assistant |
 
-> **Hot-reload:** The script registers a `SIGHUP` handler. Sending `SIGHUP` to a running process triggers a configuration re-read on the next collection cycle. Each invocation already loads `servers.json` fresh from disk, so SIGHUP is most useful when the script is wrapped in a persistent supervisor or run under a process manager.
+> **Hot-reload:** A `SIGHUP` handler is registered, but the script runs as a single-shot invocation — each run re-reads `servers.json` fresh from disk. `SIGHUP` has no additional effect in the current single-shot model; for persistent-daemon hot-reload, wrap the script in a supervisor that re-executes it on `SIGHUP`.
 
 ## Topics
 
@@ -214,6 +214,9 @@ The repository includes systemd unit files for running the collector on a timer.
 ### Installation
 
 ```bash
+# Install the script to the path expected by the service unit
+sudo install -m 0755 powerMQTT.py /usr/local/bin/powerMQTT.py
+
 # Copy unit files
 sudo cp systemd/idrac-power-mqtt.service systemd/idrac-power-mqtt.timer /etc/systemd/system/
 

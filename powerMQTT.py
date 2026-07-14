@@ -14,7 +14,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 _shutdown_event = threading.Event()
 _reload_config_event = threading.Event()
